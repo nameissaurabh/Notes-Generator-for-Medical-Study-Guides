@@ -18,7 +18,7 @@ import tiktoken
 
 # Page configuration
 st.set_page_config(
-    page_title="Medical Study Notes Generator",
+    page_title="Medical Study Notes & Q&A Generator",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,6 +55,27 @@ st.markdown("""
         padding: 1rem;
         background-color: #dbeafe;
         border-left: 4px solid #2563eb;
+        margin: 1rem 0;
+    }
+    .chat-message {
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 10px;
+        border-left: 4px solid #2563eb;
+        background-color: #f8fafc;
+    }
+    .user-message {
+        background-color: #e0f2fe;
+        border-left-color: #0277bd;
+    }
+    .bot-message {
+        background-color: #f3e5f5;
+        border-left-color: #7b1fa2;
+    }
+    .mode-selector {
+        background-color: #f1f5f9;
+        padding: 1rem;
+        border-radius: 10px;
         margin: 1rem 0;
     }
 </style>
@@ -172,10 +193,10 @@ class LLMProcessor:
         except Exception as e:
             st.error(f"Error initializing {self.model_name}: {str(e)}")
     
-    def generate_study_notes(self, text_chunk: str, content_type: str, field: str = "medicine") -> str:
+    def generate_study_notes(self, text_chunk: str, content_type: str, field: str = "medicine", custom_instructions: str = "") -> str:
         """Generate study notes using the specified LLM"""
         
-        prompt = f"""Convert this {content_type} into fully detailed notes with the following rules:
+        base_prompt = f"""Convert this {content_type} into fully detailed notes with the following rules:
 
 • Do not summarize or omit any content
 • Rewrite in structured, bullet-based format
@@ -197,13 +218,45 @@ Format style:
 • Use **bold** for main headings and key terms
 • Use numbered lists for sequential information
 • Use bullet points for related but non-sequential information
-• Create clear hierarchy with sections (I, II, III) and subsections (A, B, C)
+• Create clear hierarchy with sections (I, II, III) and subsections (A, B, C)"""
+
+        if custom_instructions:
+            base_prompt += f"\n\nAdditional Custom Instructions:\n{custom_instructions}"
+
+        prompt = f"""{base_prompt}
 
 Text to convert:
 {text_chunk}
 
 Please provide comprehensive study notes following all the above guidelines."""
 
+        return self._make_llm_call(prompt)
+    
+    def answer_question(self, question: str, document_content: str, content_type: str) -> str:
+        """Answer a question based on document content"""
+        
+        prompt = f"""You are an expert medical assistant helping students understand {content_type} content. 
+
+Based ONLY on the provided document content, please answer the following question. If the answer cannot be found in the provided content, clearly state "I couldn't find information about this topic in the provided document."
+
+Rules:
+• Only use information from the provided document
+• If the document doesn't contain the answer, clearly state so
+• Be precise and cite specific parts of the document when possible
+• Maintain medical accuracy and use appropriate terminology
+• Provide comprehensive answers when information is available
+
+Document Content:
+{document_content}
+
+Question: {question}
+
+Answer:"""
+
+        return self._make_llm_call(prompt)
+    
+    def _make_llm_call(self, prompt: str) -> str:
+        """Make API call to the selected LLM"""
         try:
             if "claude" in self.model_name.lower():
                 response = self.client.messages.create(
@@ -228,8 +281,8 @@ Please provide comprehensive study notes following all the above guidelines."""
                 return response.text
             
         except Exception as e:
-            st.error(f"Error generating notes with {self.model_name}: {str(e)}")
-            return f"Error generating notes: {str(e)}"
+            st.error(f"Error with {self.model_name}: {str(e)}")
+            return f"Error generating response: {str(e)}"
 
 class PDFGenerator:
     """Handles PDF generation for study notes"""
@@ -368,9 +421,20 @@ def extract_text_from_docx(uploaded_file) -> str:
         st.error(f"Error reading DOCX: {str(e)}")
         return ""
 
+def display_chat_history():
+    """Display chat history for Q&A mode"""
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    
+    for i, (question, answer) in enumerate(st.session_state.chat_history):
+        st.markdown(f'<div class="chat-message user-message"><strong>Q:</strong> {question}</div>', 
+                   unsafe_allow_html=True)
+        st.markdown(f'<div class="chat-message bot-message"><strong>A:</strong> {answer}</div>', 
+                   unsafe_allow_html=True)
+
 def main():
     # Main header
-    st.markdown('<h1 class="main-header">📚 Medical Study Notes Generator</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">📚 Medical Study Notes & Q&A Generator</h1>', unsafe_allow_html=True)
     
     # Sidebar configuration
     st.sidebar.header("🔧 Configuration")
@@ -386,6 +450,8 @@ def main():
         "gpt-4-turbo",
         "gpt-4",
         "gpt-3.5-turbo",
+        "gemini-2.0-pro",
+        "gemini-2.0-flash",
         "gemini-1.5-pro",
         "gemini-1.5-flash"
     ]
@@ -438,10 +504,20 @@ def main():
     
     # Advanced settings
     with st.sidebar.expander("⚙️ Advanced Settings"):
-        chunk_size = st.slider("Chunk Size (tokens)", 1000, 5000, 3000, 500)
+        chunk_size = st.slider("Chunk Size (tokens)", 1000, 10000, 5000, 500)
         overlap_size = st.slider("Overlap Size (tokens)", 100, 500, 200, 50)
     
-    # Main content area
+    # Mode selection
+    st.markdown('<div class="mode-selector">', unsafe_allow_html=True)
+    mode = st.radio(
+        "Choose Mode:",
+        ["📝 Study Notes Generation", "❓ Q&A with Document"],
+        horizontal=True,
+        help="Study Notes: Generate comprehensive notes from your document. Q&A: Ask questions about the document content."
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Input section
     st.markdown('<div class="sub-header">📄 Input Your Content</div>', unsafe_allow_html=True)
     
     # Input method selection
@@ -475,6 +551,9 @@ def main():
                 st.markdown('<div class="success-box">✅ File uploaded and text extracted successfully!</div>', 
                           unsafe_allow_html=True)
                 st.info(f"Extracted {len(text_content)} characters from the document.")
+                
+                # Store content in session state for Q&A mode
+                st.session_state.document_content = text_content
     
     else:  # Paste Text
         text_content = st.text_area(
@@ -482,115 +561,210 @@ def main():
             height=300,
             placeholder="Paste your medical text, research paper, or textbook content here..."
         )
+        
+        if text_content:
+            st.session_state.document_content = text_content
     
     # Text preview
     if text_content:
         with st.expander("📖 Preview Text (First 500 characters)"):
             st.text(text_content[:500] + "..." if len(text_content) > 500 else text_content)
     
-    # Generate study notes
-    if st.button("🎯 Generate Study Notes", type="primary", use_container_width=True):
-        if not api_key:
-            st.error("Please enter your API key in the sidebar.")
-            return
+    # Mode-specific interface
+    if mode == "📝 Study Notes Generation":
+        # Custom instructions section
+        st.markdown('<div class="sub-header">✏️ Custom Instructions (Optional)</div>', unsafe_allow_html=True)
         
-        if not text_content:
-            st.error("Please provide text content to process.")
-            return
+        custom_instructions = st.text_area(
+            "Add any specific instructions or requirements for your study notes:",
+            height=150,
+            placeholder="""Examples:
+• Focus more on diagnostic criteria and treatment protocols
+• Include specific attention to drug interactions
+• Emphasize statistical data and research methodologies
+• Add clinical correlation points
+• Include mnemonics where applicable
+• Focus on examination points for board prep"""
+        )
         
-        try:
-            # Initialize processors
-            text_processor = TextProcessor()
-            llm_processor = LLMProcessor(selected_model, api_key)
+        # Generate study notes
+        if st.button("🎯 Generate Study Notes", type="primary", use_container_width=True):
+            if not api_key:
+                st.error("Please enter your API key in the sidebar.")
+                return
             
-            # Clean and process text
-            with st.spinner("Preprocessing text..."):
-                cleaned_text = text_processor.clean_text(text_content)
-                chunks = text_processor.recursive_text_split(
-                    cleaned_text, 
-                    max_chunk_size=chunk_size, 
-                    overlap=overlap_size
-                )
+            if not text_content:
+                st.error("Please provide text content to process.")
+                return
             
-            st.info(f"Text split into {len(chunks)} chunks for processing.")
-            
-            # Generate study notes for each chunk
-            all_study_notes = []
-            progress_bar = st.progress(0)
-            
-            for i, chunk in enumerate(chunks):
-                with st.spinner(f"Generating study notes for chunk {i+1}/{len(chunks)}..."):
-                    study_notes = llm_processor.generate_study_notes(
-                        chunk, content_type, study_field
-                    )
-                    all_study_notes.append(study_notes)
-                    progress_bar.progress((i + 1) / len(chunks))
+            try:
+                # Initialize processors
+                text_processor = TextProcessor()
+                llm_processor = LLMProcessor(selected_model, api_key)
                 
-                # Add delay to avoid rate limiting
-                if i < len(chunks) - 1:
-                    time.sleep(1)
+                # Clean and process text
+                with st.spinner("Preprocessing text..."):
+                    cleaned_text = text_processor.clean_text(text_content)
+                    chunks = text_processor.recursive_text_split(
+                        cleaned_text, 
+                        max_chunk_size=chunk_size, 
+                        overlap=overlap_size
+                    )
+                
+                st.info(f"Text split into {len(chunks)} chunks for processing.")
+                
+                # Generate study notes for each chunk
+                all_study_notes = []
+                progress_bar = st.progress(0)
+                
+                for i, chunk in enumerate(chunks):
+                    with st.spinner(f"Generating study notes for chunk {i+1}/{len(chunks)}..."):
+                        study_notes = llm_processor.generate_study_notes(
+                            chunk, content_type, study_field, custom_instructions
+                        )
+                        all_study_notes.append(study_notes)
+                        progress_bar.progress((i + 1) / len(chunks))
+                    
+                    # Add delay to avoid rate limiting
+                    if i < len(chunks) - 1:
+                        time.sleep(1)
+                
+                # Combine all study notes
+                combined_notes = "\n\n---\n\n".join(all_study_notes)
+                
+                # Display results
+                st.markdown('<div class="success-box">✅ Study notes generated successfully!</div>', 
+                          unsafe_allow_html=True)
+                
+                # Study notes display
+                st.markdown("## 📝 Generated Study Notes")
+                st.markdown(combined_notes)
+                
+                # Store in session state for download
+                st.session_state.study_notes = combined_notes
+                st.session_state.notes_title = f"{content_type.title()} - Study Notes"
+                
+                # Download section
+                st.markdown("## 📥 Download Options")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Text download
+                    st.download_button(
+                        label="📄 Download as Text",
+                        data=combined_notes,
+                        file_name=f"study_notes_{int(time.time())}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+                
+                with col2:
+                    # PDF download
+                    if st.button("📊 Generate PDF", use_container_width=True):
+                        with st.spinner("Generating PDF..."):
+                            pdf_generator = PDFGenerator()
+                            pdf_bytes = pdf_generator.generate_pdf(
+                                combined_notes, 
+                                st.session_state.notes_title
+                            )
+                            
+                            if pdf_bytes:
+                                st.download_button(
+                                    label="📑 Download PDF",
+                                    data=pdf_bytes,
+                                    file_name=f"study_notes_{int(time.time())}.pdf",
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
             
-            # Combine all study notes
-            combined_notes = "\n\n---\n\n".join(all_study_notes)
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+    
+    else:  # Q&A Mode
+        st.markdown('<div class="sub-header">❓ Ask Questions About Your Document</div>', unsafe_allow_html=True)
+        
+        if not hasattr(st.session_state, 'document_content') or not st.session_state.document_content:
+            st.warning("Please upload or paste a document first to use Q&A mode.")
+            return
+        
+        if not api_key:
+            st.warning("Please enter your API key in the sidebar to use Q&A mode.")
+            return
+        
+        # Initialize chat history and question counter
+        if 'chat_history' not in st.session_state:
+            st.session_state.chat_history = []
+        
+        if 'question_counter' not in st.session_state:
+            st.session_state.question_counter = 0
+        
+        # Create a form for question submission
+        with st.form(key="question_form", clear_on_submit=True):
+            question = st.text_input(
+                "Ask a question about your document:",
+                placeholder="e.g., What are the side effects of this medication? What are the diagnostic criteria mentioned?",
+                key=f"question_input_{st.session_state.question_counter}"
+            )
             
-            # Display results
-            st.markdown('<div class="success-box">✅ Study notes generated successfully!</div>', 
-                      unsafe_allow_html=True)
-            
-            # Study notes display
-            st.markdown("## 📝 Generated Study Notes")
-            st.markdown(combined_notes)
-            
-            # Store in session state for download
-            st.session_state.study_notes = combined_notes
-            st.session_state.notes_title = f"{content_type.title()} - Study Notes"
-            
-            # Download section
-            st.markdown("## 📥 Download Options")
-            
-            col1, col2 = st.columns(2)
+            col1, col2 = st.columns([3, 1])
             
             with col1:
-                # Text download
-                st.download_button(
-                    label="📄 Download as Text",
-                    data=combined_notes,
-                    file_name=f"study_notes_{int(time.time())}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
+                ask_button = st.form_submit_button("🔍 Ask Question", type="primary", use_container_width=True)
             
             with col2:
-                # PDF download
-                if st.button("📊 Generate PDF", use_container_width=True):
-                    with st.spinner("Generating PDF..."):
-                        pdf_generator = PDFGenerator()
-                        pdf_bytes = pdf_generator.generate_pdf(
-                            combined_notes, 
-                            st.session_state.notes_title
-                        )
-                        
-                        if pdf_bytes:
-                            st.download_button(
-                                label="📑 Download PDF",
-                                data=pdf_bytes,
-                                file_name=f"study_notes_{int(time.time())}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True
-                            )
+                clear_button = st.form_submit_button("🗑️ Clear Chat", use_container_width=True)
         
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
+        # Handle clear chat
+        if clear_button:
+            st.session_state.chat_history = []
+            st.session_state.question_counter += 1
+            st.rerun()
+        
+        # Handle question submission
+        if ask_button and question.strip():
+            with st.spinner("Searching document for answer..."):
+                try:
+                    llm_processor = LLMProcessor(selected_model, api_key)
+                    answer = llm_processor.answer_question(
+                        question, 
+                        st.session_state.document_content, 
+                        content_type
+                    )
+                    
+                    # Add to chat history
+                    st.session_state.chat_history.append((question, answer))
+                    st.session_state.question_counter += 1
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"Error processing question: {str(e)}")
+        
+        # Display chat history
+        if st.session_state.chat_history:
+            st.markdown("## 💬 Q&A History")
+            display_chat_history()
+        else:
+            st.info("👆 Ask your first question about the document!")
     
     # Instructions and information
     with st.expander("📋 Instructions & Information"):
         st.markdown("""
         ### How to Use:
-        1. **Configure Settings**: Select your preferred LLM model and enter the API key in the sidebar
+        
+        #### Study Notes Mode:
+        1. **Configure Settings**: Select your preferred LLM model and enter the API key
         2. **Choose Content Type**: Select the type of medical content you're processing
-        3. **Input Content**: Either upload a file (PDF, DOCX, TXT) or paste text directly
-        4. **Generate Notes**: Click the "Generate Study Notes" button to process your content
-        5. **Download**: Get your formatted study notes as text or PDF
+        3. **Input Content**: Upload a file (PDF, DOCX, TXT) or paste text directly
+        4. **Add Custom Instructions**: Optionally add specific requirements for your notes
+        5. **Generate Notes**: Click "Generate Study Notes" to process your content
+        6. **Download**: Get your formatted study notes as text or PDF
+        
+        #### Q&A Mode:
+        1. **Upload Document**: First upload or paste your document content
+        2. **Ask Questions**: Type questions about the document content
+        3. **Get Answers**: The AI will answer based only on the document content
+        4. **Chat History**: Previous Q&A pairs are saved during your session
         
         ### Supported LLM Models:
         - **Claude Models**: claude-3-5-sonnet, claude-3-5-haiku, claude-3-opus
@@ -598,19 +772,29 @@ def main():
         - **Gemini Models**: gemini-1.5-pro, gemini-1.5-flash
         
         ### Features:
+        - ✅ Custom instruction support for personalized notes
+        - ✅ Q&A mode for document interrogation
         - ✅ Comprehensive text preprocessing and chunking
         - ✅ Multiple LLM integration support
         - ✅ Medical content specialization
         - ✅ Structured note formatting
         - ✅ PDF and text export options
-        - ✅ Preserves all important medical information
+        - ✅ Chat history in Q&A mode
+        - ✅ Document-based answer verification
         
-        ### Note Format Features:
-        - **Complete Content Preservation**: No summarization or omission
-        - **Structured Bullet Format**: Clear hierarchy and organization
-        - **Medical Specialization**: Preserves drug names, dosages, clinical findings
-        - **Academic Level**: Tailored for postgraduate students
-        - **Professional Formatting**: Bold headings, proper indentation, numbering
+        ### Custom Instructions Examples:
+        - "Focus on diagnostic criteria and treatment protocols"
+        - "Include drug interactions and contraindications"
+        - "Emphasize statistical data and research methodologies"
+        - "Add clinical correlation points for practical application"
+        - "Include mnemonics for easy memorization"
+        - "Focus on board exam relevant points"
+        
+        ### Q&A Mode Features:
+        - **Document-Based Answers**: Only answers based on uploaded content
+        - **Source Verification**: Clearly states when information isn't found
+        - **Medical Accuracy**: Maintains professional medical terminology
+        - **Interactive Chat**: Conversational interface with history
         """)
 
 if __name__ == "__main__":
